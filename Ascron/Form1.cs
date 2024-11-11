@@ -21,12 +21,12 @@ namespace EmailToPdfConverter
         private readonly Outlook.NameSpace outlookNamespace;
 
         // Preset paths for the queues
-        private readonly string queuePath1 = @"C:\Users\Angelo\Documents\New folder (7)\queue1";
-        private readonly string queuePath2 = @"C:\PresetPath\Queue2";
-        private readonly string queuePath3 = @"C:\PresetPath\Queue3";
-        private readonly string queuePath4 = @"C:\PresetPath\Queue4";
-        private readonly string queuePath5 = @"C:\PresetPath\Queue5";
-        private readonly string queuePath6 = @"C:\PresetPath\Queue6";
+        private readonly string queuePath1 = @"\\csputascron01\DE_Sources\Queue1";
+        private readonly string queuePath2 = @"\\csputascron01\DE_Sources\Queue2";
+        private readonly string queuePath3 = @"\\csputascron01\DE_Sources\Queue3";
+        private readonly string queuePath4 = @"\\csputascron01\DE_Sources\Queue4";
+        private readonly string queuePath5 = @"\\csputascron01\DE_Sources\Queue5";
+        private readonly string queuePath6 = @"C:\Users\de-Angelo\OneDrive - PRA Group Europe\Dokumente\New folder (10)";
 
         private string previewFilePath = string.Empty;
         private WebBrowser pdfPreviewBrowser;
@@ -123,39 +123,78 @@ namespace EmailToPdfConverter
             string subject = mail.Subject;
             if (string.IsNullOrEmpty(subject)) return string.Empty;
 
+            Log("ConvertEmailToPdf", subject, "Started");
+
             subject = new string(subject.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
             string tempFolderPath = Path.Combine(Path.GetTempPath(), "EmailToPdfConverter");
 
             if (!Directory.Exists(tempFolderPath))
             {
                 Directory.CreateDirectory(tempFolderPath);
+                Log("DirectoryCreation", tempFolderPath, "Success");
             }
 
             string tempMailFilePath = Path.Combine(tempFolderPath, subject + ".pdf");
 
             // Save email as .mht and convert to PDF
             string mhtFilePath = Path.Combine(tempFolderPath, subject + ".mht");
-            if (!SaveMailAsMht(mail, mhtFilePath)) return string.Empty;
-
-            string emailPdfPath = Path.Combine(tempFolderPath, subject + "_email.pdf");
-            ConvertMhtToPdf(mhtFilePath, emailPdfPath);
-            File.Delete(mhtFilePath);
-
-            // Convert attachments
-            var attachmentPdfPaths = ConvertAttachmentsToPdf(mail, tempFolderPath);
-
-            // Merge all PDFs
-            MergePdfs(emailPdfPath, attachmentPdfPaths, tempMailFilePath);
-
-            // Cleanup
-            File.Delete(emailPdfPath);
-            foreach (var path in attachmentPdfPaths)
+            if (!SaveMailAsMht(mail, mhtFilePath))
             {
-                File.Delete(path);
+                Log("SaveMailAsMht", mhtFilePath, "Failure", "Failed to save email as MHT.");
+                return string.Empty;
             }
 
-            MessageBox.Show("Email and attachments converted to PDF successfully.");
-            return tempMailFilePath;
+            try
+            {
+                string emailPdfPath = Path.Combine(tempFolderPath, subject + "_email.pdf");
+                ConvertMhtToPdf(mhtFilePath, emailPdfPath);
+                File.Delete(mhtFilePath);
+                Log("ConvertMhtToPdf", emailPdfPath, "Success");
+
+                // Convert attachments
+                var attachmentPdfPaths = ConvertAttachmentsToPdf(mail, tempFolderPath);
+                Log("ConvertAttachmentsToPdf", string.Join(", ", attachmentPdfPaths), "Success");
+
+                // Merge all PDFs
+                MergePdfs(emailPdfPath, attachmentPdfPaths, tempMailFilePath);
+                Log("MergePdfs", tempMailFilePath, "Success");
+
+                // Cleanup
+                File.Delete(emailPdfPath);
+                foreach (var path in attachmentPdfPaths)
+                {
+                    File.Delete(path);
+                    Log("Cleanup", path, "Deleted");
+                }
+
+                MessageBox.Show("Email and attachments converted to PDF successfully.");
+                Log("ConvertEmailToPdf", tempMailFilePath, "Completed");
+                return tempMailFilePath;
+            }
+            catch (Exception ex)
+            {
+                Log("ConvertEmailToPdf", tempMailFilePath, "Failure", ex.Message);
+                return string.Empty;
+            }
+        }
+        private void Log(string action, string fileName, string status, string message = "")
+        {
+            string appDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EmailToPdfConverter");
+            if (!Directory.Exists(appDataPath))
+            {
+                Directory.CreateDirectory(appDataPath);
+            }
+            string logFilePath = Path.Combine(appDataPath, "file_operations.log");
+            string logMessage = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - ACTION: {action}, FILE: {fileName}, STATUS: {status}, MESSAGE: {message}";
+
+            try
+            {
+                File.AppendAllText(logFilePath, logMessage + Environment.NewLine);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to write to log file: {ex.Message}");
+            }
         }
 
         private void SendPreviewToQueue(string queuePath)
@@ -163,6 +202,7 @@ namespace EmailToPdfConverter
             if (string.IsNullOrEmpty(previewFilePath))
             {
                 MessageBox.Show("Please generate a preview first.");
+                Log("SendPreviewToQueue", "NoFile", "Failure", "No preview file generated.");
                 return;
             }
 
@@ -183,6 +223,7 @@ namespace EmailToPdfConverter
                 Thread.Sleep(1000);
 
                 File.Move(previewFilePath, finalMailFilePath);
+                Log("SendPreviewToQueue", finalMailFilePath, "Success");
                 MessageBox.Show("PDF successfully moved to queue.");
                 previewFilePath = string.Empty; // Reset the preview file path
             }
@@ -190,10 +231,12 @@ namespace EmailToPdfConverter
             {
                 if (ex.HResult == 0x800700B7) // ERROR_ALREADY_EXISTS
                 {
+                    Log("SendPreviewToQueue", finalMailFilePath, "Failure", "File already exists.");
                     MessageBox.Show($"The file '{finalMailFilePath}' already exists.");
                 }
                 else
                 {
+                    Log("SendPreviewToQueue", finalMailFilePath, "Failure", ex.Message);
                     MessageBox.Show($"An error occurred while moving the file: {ex.Message}");
                 }
             }
@@ -223,14 +266,43 @@ namespace EmailToPdfConverter
             return false;
         }
 
-        private static void ConvertMhtToPdf(string mhtFilePath, string pdfFilePath)
+        private void ConvertMhtToPdf(string mhtFilePath, string pdfFilePath)
         {
             var wordApp = new Word.Application();
             var documents = wordApp.Documents;
             var doc = documents.Open(mhtFilePath);
 
+            // Loop through all inline shapes (images, etc.) in the document and adjust their size
+            foreach (Word.InlineShape inlineShape in doc.InlineShapes)
+            {
+                if (inlineShape.Type == Word.WdInlineShapeType.wdInlineShapePicture ||
+                    inlineShape.Type == Word.WdInlineShapeType.wdInlineShapeLinkedPicture)
+                {
+                    // Lock aspect ratio
+                    inlineShape.LockAspectRatio = Microsoft.Office.Core.MsoTriState.msoTrue;
+
+                    float originalWidth = inlineShape.Width;
+                    float originalHeight = inlineShape.Height;
+
+                    // Adjust size based on page width and height, keeping the aspect ratio
+                    if (originalWidth > doc.PageSetup.PageWidth - doc.PageSetup.LeftMargin - doc.PageSetup.RightMargin)
+                    {
+                        float scaleFactor = (doc.PageSetup.PageWidth - doc.PageSetup.LeftMargin - doc.PageSetup.RightMargin) / originalWidth;
+                        inlineShape.Width = originalWidth * scaleFactor;
+                        inlineShape.Height = originalHeight * scaleFactor;
+                    }
+
+                    // Ensure small images don't get stretched
+                    if (inlineShape.Width < 100)
+                    {
+                        inlineShape.Width = originalWidth; // Revert any scaling for small images
+                        inlineShape.Height = originalHeight;
+                    }
+                }
+            }
+
             doc.SaveAs2(pdfFilePath, Word.WdSaveFormat.wdFormatPDF);
-            doc.Close();
+            doc.Close(false);
             wordApp.Quit();
             Marshal.ReleaseComObject(doc);
             Marshal.ReleaseComObject(documents);
@@ -324,7 +396,17 @@ namespace EmailToPdfConverter
                     using (var imageStream = new FileStream(imagePath, FileMode.Open))
                     {
                         var image = iTextSharp.text.Image.GetInstance(imageStream);
-                        image.ScaleToFit(document.PageSize.Width - document.LeftMargin - document.RightMargin, document.PageSize.Height - document.TopMargin - document.BottomMargin);
+                        float pageWidth = document.PageSize.Width - document.LeftMargin - document.RightMargin;
+                        float pageHeight = document.PageSize.Height - document.TopMargin - document.BottomMargin;
+
+                        if (image.Width > pageWidth || image.Height > pageHeight)
+                        {
+                            image.ScaleToFit(pageWidth, pageHeight);
+                        }
+                        else
+                        {
+                            image.ScaleToFit(image.Width, image.Height);
+                        }
                         image.Alignment = Element.ALIGN_CENTER;
                         document.Add(image);
                     }
